@@ -1,0 +1,15 @@
+pkgbase = sysconfig
+	pkgdesc = Texas Instruments SysConfig Tool
+	pkgver = 1.27.0.4565
+	pkgrel = 1
+	url = http://www.ti.com/tool/SYSCONFIG
+	install = sysconfig.install
+	arch = x86_64
+	license = custom:TSPA
+	depends = binutils
+	options = !strip
+	options = !purge
+	source = sysconfig-1.27.0.4565-setup.run::https://dr-download.ti.com/software-development/ide-configuration-compiler-or-debugger/MD-nsUM6f7Vvb/1.27.0.4565/sysconfig-1.27.0_4565-setup.run
+	sha256sums = aaaeed931c5dea9fa4fa135612d773af5724e2916148bb6947ef4adc1b980517
+
+pkgname = sysconfig
