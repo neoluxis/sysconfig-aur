@@ -49,29 +49,45 @@ build() {
 }
 
 package() {
-    # 1. 修正 .desktop 文件中的路径（从 $srcdir 指向系统的 /opt）
-    _desktop_file="$srcdir/opt/$pkgname/TI sysconfig.desktop"
-    if [ -f "$_desktop_file" ]; then
-        sed -i "s#$srcdir/opt# /opt#g" "$_desktop_file"
-        install -D -m0644 "$_desktop_file" "$pkgdir/usr/share/applications/$pkgname.desktop"
-    fi
-
-    # 2. 将安装好的整个目录移动到 pkgdir
+    # 1. 准备安装目录
     mkdir -p "$pkgdir/opt"
     cp -ral "$srcdir/opt/$pkgname" "$pkgdir/opt/"
 
-    # 3. 权限修正
-    # SysConfig 有时需要在其目录下写入临时文件或更新，保持与 CCS 类似的权限逻辑
-    chmod -R 755 "$pkgdir/opt/$pkgname"
+    # 2. 使用 awk 注入动态路径解析逻辑
+    # 替换 DIR=`dirname "$0"` 为能追踪软链接物理位置的代码
+    _fix_script() {
+        awk '
+        /^DIR=`dirname/ {
+            print "# 路径修正：支持从软链接启动"
+            print "REAL_PATH=$(readlink -f \"$0\")"
+            print "DIR=$(dirname \"$REAL_PATH\")"
+            next
+        }
+        { print }' "$1" > "$1.tmp" && mv "$1.tmp" "$1"
+    }
 
-    # 4. 创建可执行文件软链接
+    _fix_script "$pkgdir/opt/$pkgname/sysconfig_gui.sh"
+    _fix_script "$pkgdir/opt/$pkgname/sysconfig_cli.sh"
+
+    # 3. 创建软链接
     mkdir -p "$pkgdir/usr/bin"
-    ln -s "/opt/$pkgname/sysconfig_gui.sh" "$pkgdir/usr/bin/sysconfig-gui"
-    ln -s "/opt/$pkgname/sysconfig_gui.sh" "$pkgdir/usr/bin/sysconfig"
-    ln -s "/opt/$pkgname/sysconfig_cli.sh" "$pkgdir/usr/bin/sysconfig-cli"
+    ln -s "/opt/$pkgname/sysconfig_gui.sh" "$pkgdir/usr/bin/$pkgname"
+    ln -s "/opt/$pkgname/sysconfig_cli.sh" "$pkgdir/usr/bin/$pkgname-cli"
 
-    # 5. 处理 License
-    # 尝试从安装目录寻找协议文件
+    # 4. 修正 .desktop 文件
+    _desktop_file="$pkgdir/opt/$pkgname/TI sysconfig.desktop"
+    if [ -f "$_desktop_file" ]; then
+        sed -i "s#$srcdir/opt#/opt#g" "$_desktop_file"
+        # 统一使用 /usr/bin 下的链接启动
+        sed -i "s#Exec=.*#Exec=/usr/bin/$pkgname#g" "$_desktop_file"
+        install -D -m0644 "$_desktop_file" "$pkgdir/usr/share/applications/$pkgname.desktop"
+    fi
+
+    # 5. 权限与许可证
+    chmod -R 755 "$pkgdir/opt/$pkgname"
+    chmod +x "$pkgdir/usr/bin/"*
+
     install -d "$pkgdir/usr/share/licenses/$pkgname"
-    find "$pkgdir/opt/$pkgname" -name "*license*" -maxdepth 2 -exec cp {} "$pkgdir/usr/share/licenses/$pkgname/" \;
+    # 自动寻找可能存在的 LICENSE 文件
+    find "$pkgdir/opt/$pkgname" -maxdepth 2 \( -name "LICENSE" -o -name "*license*" \) -exec cp {} "$pkgdir/usr/share/licenses/$pkgname/" \;
 }
