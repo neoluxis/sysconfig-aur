@@ -29,65 +29,88 @@ options=(!strip libtool staticlibs emptydirs !purge !zipman)
 
 _desktop="SysConfig ${_semver}.desktop"
 
-_destdir=opt
+_destdir=opt/ti/${pkgname}
 _installdir=installdir
 _installpath=$_installdir/$_destdir/$pkgname
 _scriptsdir=$_installpath/${pkgname}/install_scripts
 
 options=(!strip !purge)
 
-build() {
-    # 创建伪造的 home 目录以防污染主系统
-    mkdir -p "$srcdir/fakehome"
 
-    echo ">>> Installing..."
-    # 修正：直接运行下载的 bin 文件，prefix 指向 srcdir 下的临时目录
+_destdir="/opt/ti/$pkgname"
+
+build() {
+    # 显式创建完整的临时安装路径
+    mkdir -p "$srcdir/fakehome"
+    mkdir -p "$srcdir$_destdir"
+
     chmod +x "${pkgname}-${pkgver}-setup.run"
+
+    echo ">>> 正在安装至临时目录..."
+    # 关键：确保 --prefix 指向的是一个已经存在的绝对路径
     HOME="$srcdir/fakehome" ./"${pkgname}-${pkgver}-setup.run" \
         --mode unattended \
-        --prefix "$srcdir/opt/$pkgname"
+        --prefix "$srcdir$_destdir"
 }
 
 package() {
-    # 1. 准备安装目录
-    mkdir -p "$pkgdir/opt"
-    cp -ral "$srcdir/opt/$pkgname" "$pkgdir/opt/"
+    # 1. 确认安装源目录存在
+    if [ ! -d "$srcdir$_destdir" ]; then
+        echo "错误：安装目录未找到！"
+        exit 1
+    fi
 
-    # 2. 使用 awk 注入动态路径解析逻辑
-    # 替换 DIR=`dirname "$0"` 为能追踪软链接物理位置的代码
+    # 2. 拷贝到 pkgdir
+    mkdir -p "$pkgdir/opt/ti"
+    cp -ral "$srcdir/opt/ti/$pkgname" "$pkgdir/opt/ti/"
+
+    # 3. 注入动态路径解析逻辑 (使用 awk)
     _fix_script() {
-        awk '
-        /^DIR=`dirname/ {
-            print "# 路径修正：支持从软链接启动"
+        awk '/^DIR=`dirname/ {
+            print "# Path fix: Support running from symlinks"
             print "REAL_PATH=$(readlink -f \"$0\")"
             print "DIR=$(dirname \"$REAL_PATH\")"
             next
-        }
-        { print }' "$1" > "$1.tmp" && mv "$1.tmp" "$1"
+        } { print }' "$1" > "$1.tmp" && mv "$1.tmp" "$1"
     }
+    _fix_script "$pkgdir$_destdir/sysconfig_gui.sh"
+    _fix_script "$pkgdir$_destdir/sysconfig_cli.sh"
 
-    _fix_script "$pkgdir/opt/$pkgname/sysconfig_gui.sh"
-    _fix_script "$pkgdir/opt/$pkgname/sysconfig_cli.sh"
-
-    # 3. 创建软链接
+    # 4. 创建系统软链接
     mkdir -p "$pkgdir/usr/bin"
-    ln -s "/opt/$pkgname/sysconfig_gui.sh" "$pkgdir/usr/bin/$pkgname"
-    ln -s "/opt/$pkgname/sysconfig_cli.sh" "$pkgdir/usr/bin/$pkgname-cli"
+    ln -s "$_destdir/sysconfig_gui.sh" "$pkgdir/usr/bin/$pkgname"
+    ln -s "$_destdir/sysconfig_cli.sh" "$pkgdir/usr/bin/$pkgname-cli"
 
-    # 4. 修正 .desktop 文件
-    _desktop_file="$pkgdir/opt/$pkgname/TI sysconfig.desktop"
-    if [ -f "$_desktop_file" ]; then
-        sed -i "s#$srcdir/opt#/opt#g" "$_desktop_file"
-        # 统一使用 /usr/bin 下的链接启动
-        sed -i "s#Exec=.*#Exec=/usr/bin/$pkgname#g" "$_desktop_file"
-        install -D -m0644 "$_desktop_file" "$pkgdir/usr/share/applications/$pkgname.desktop"
+    # 5. 【关键：安装并修正 Desktop 文件】
+    echo ">>> 正在处理并安装 Desktop 文件..."
+    # 自动定位那个带空格的原始文件，例如 "TI sysconfig.desktop"
+    _orig_desktop=$(find "$pkgdir$_destdir" -maxdepth 1 -name "*.desktop" -print -quit)
+
+    if [ -n "$_orig_desktop" ]; then
+        # A. 将所有构建时的临时绝对路径替换为系统路径 /opt/ti
+        sed -i "s#$srcdir/opt/ti#/opt/ti#g" "$_orig_desktop"
+
+        # B. 修正 Exec：让它指向我们包装好的 /usr/bin/sysconfig
+        # 原始的 Exec 往往直接调用 nw 二进制，这会导致某些环境下运行失败
+        sed -i "s#Exec=.*#Exec=/usr/bin/$pkgname#g" "$_orig_desktop"
+
+        # C. 修正 Path 和 Icon 路径（如果 sed 没改干净）
+        sed -i "s#Path=.*#Path=$_destdir#g" "$_orig_desktop"
+
+        # D. 投递到目的地，并重命名为规范的 sysconfig.desktop
+        install -D -m0644 "$_orig_desktop" "$pkgdir/usr/share/applications/$pkgname.desktop"
+
+        # 清理掉 /opt/ti/sysconfig 目录下原始的带空格的 desktop 文件，保持目录整洁
+        rm "$_orig_desktop"
+    else
+        echo ">>> 警告：未在安装目录中找到 .desktop 文件！"
     fi
 
-    # 5. 权限与许可证
-    chmod -R 755 "$pkgdir/opt/$pkgname"
-    chmod +x "$pkgdir/usr/bin/"*
+    # 6. 权限与 License
+    echo ">>> 正在修正权限..."
+    chmod -R 755 "$pkgdir$_destdir"
+    chmod -h 755 "$pkgdir/usr/bin/$pkgname" "$pkgdir/usr/bin/$pkgname-cli"
 
     install -d "$pkgdir/usr/share/licenses/$pkgname"
-    # 自动寻找可能存在的 LICENSE 文件
-    find "$pkgdir/opt/$pkgname" -maxdepth 2 \( -name "LICENSE" -o -name "*license*" \) -exec cp {} "$pkgdir/usr/share/licenses/$pkgname/" \;
+    find "$pkgdir$_destdir" -maxdepth 2 \( -name "LICENSE" -o -name "*license*" \) -exec cp {} "$pkgdir/usr/share/licenses/$pkgname/" \;
 }
